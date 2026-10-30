@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Path to JSON customer data file (default: {DEFAULT_DATA_FILE}).",
     )
     parser.add_argument(
+        "--active-only",
+        action="store_true",
+        dest="active_only",
+        help="Filter search results to active customers only.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -83,7 +89,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         data_path = Path(args.data_file)
         repository = InMemoryCustomerRepository.from_json_file(data_path)
         service = CustomerSearchService(repository=repository)
-        result = service.search(query=args.query, field=args.field)
+        result = service.search(
+            query=args.query,
+            field=args.field,
+            active_only=args.active_only,
+        )
 
         if args.as_json:
             print(json.dumps(result.to_dict(), indent=2))

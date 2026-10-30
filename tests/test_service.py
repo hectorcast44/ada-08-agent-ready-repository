@@ -86,3 +86,23 @@ def test_service_decoupling_with_custom_repo():
     result = service.search("ranger", field="email")
     assert result.total_matches == 2
     assert [c.name for c in result.customers] == ["Adam Park", "Zack Taylor"]
+
+
+def test_service_active_only_filter():
+    # CR-01: active_only flag returns only active customers
+    custom_repo = InMemoryCustomerRepository([
+        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
+        Customer("2", "Bob Inactive", "bob@example.com", "222", is_active=False),
+    ])
+    service = CustomerSearchService(custom_repo)
+
+    # By default, both are returned
+    all_res = service.search("example", field="email")
+    assert all_res.total_matches == 2
+
+    # With active_only=True, only Alice is returned
+    active_res = service.search("example", field="email", active_only=True)
+    assert active_res.total_matches == 1
+    assert active_res.customers[0].id == "1"
+    assert active_res.customers[0].is_active is True
+

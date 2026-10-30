@@ -81,3 +81,14 @@ def test_cli_invalid_field_option(capsys):
     assert ret == 2
     captured = capsys.readouterr()
     assert "invalid choice" in captured.err
+
+
+def test_cli_active_only_flag(capsys):
+    # CR-01: --active-only filters out inactive customers
+    ret = main(["garcia", "--active-only", "--json"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    for cust in data["customers"]:
+        assert cust["is_active"] is True
+
