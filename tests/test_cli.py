@@ -92,3 +92,12 @@ def test_cli_active_only_flag(capsys):
     for cust in data["customers"]:
         assert cust["is_active"] is True
 
+
+def test_cli_limit_flag(capsys):
+    # CR-02: --limit constrains output count
+    ret = main(["garcia", "--limit", "1", "--json"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert len(data["customers"]) == 1
+

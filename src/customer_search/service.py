@@ -24,6 +24,7 @@ class CustomerSearchService:
         query: str,
         field: str = "all",
         active_only: bool = False,
+        limit: int | None = None,
     ) -> SearchResult:
         """Search customers matching query on given field.
 
@@ -31,17 +32,23 @@ class CustomerSearchService:
             query: The search term.
             field: One of 'all', 'name', 'email'. Defaults to 'all'.
             active_only: If True, restricts matches to active customers.
+            limit: Optional maximum number of customers to return.
 
         Returns:
             SearchResult containing matching customers and match metrics.
 
         Raises:
-            ValidationError: If query violates VR-01, VR-02, or VR-03.
+            ValidationError: If query violates VR-01, VR-02, or VR-03, or limit is invalid.
         """
         # Validate and normalize query (VR-01, VR-02, VR-03)
         normalized_query = self._validator.validate(query, field=field)
         field_target = field.lower().strip()
         search_term_lower = normalized_query.lower()
+
+        if limit is not None:
+            if not isinstance(limit, int) or limit <= 0:
+                from src.customer_search.exceptions import ValidationError
+                raise ValidationError("Search limit must be a positive integer.")
 
         all_customers = self._repository.get_all()
         matched: list[Customer] = []
@@ -68,6 +75,9 @@ class CustomerSearchService:
 
         # SR-05 Sort alphabetically by name ascending, then by id
         matched.sort(key=lambda c: (c.name.lower(), c.id))
+
+        if limit is not None:
+            matched = matched[:limit]
 
         return SearchResult(
             query=normalized_query,
