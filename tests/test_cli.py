@@ -92,3 +92,35 @@ def test_cli_active_only_flag(capsys):
     for cust in data["customers"]:
         assert cust["is_active"] is True
 
+
+def test_cli_limit_flag(capsys):
+    # CR-02: --limit constrains output count while reporting total matches
+    ret = main(["garcia", "--limit", "1", "--json"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert len(data["customers"]) == 1
+    assert data["total_matches"] == 3
+
+
+def test_cli_limit_text_output(capsys):
+    # CR-02 / FR-05: Tabular text output indicates total matches
+    ret = main(["garcia", "--limit", "1"])
+    assert ret == 0
+    captured = capsys.readouterr()
+    assert "Found 3 customer(s) matching 'garcia'" in captured.out
+    # Only 1 customer row in the table plus header/separator lines
+    table_rows = [line for line in captured.out.splitlines() if "cust-" in line.lower()]
+    assert len(table_rows) == 1
+
+
+
+def test_cli_limit_invalid_zero(capsys):
+    # CR-02 / FR-06: --limit 0 exits with code 1 and descriptive error
+    ret = main(["garcia", "--limit", "0"])
+    assert ret == 1
+    captured = capsys.readouterr()
+    assert "Error: Search limit must be a positive integer." in captured.err
+    assert "Traceback" not in captured.err
+
+

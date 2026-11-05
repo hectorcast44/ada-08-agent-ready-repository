@@ -1,0 +1,1701 @@
+diff --git a/AI_USAGE_LOG.md b/AI_USAGE_LOG.md
+index f8e5aac..0f5a856 100644
+--- a/AI_USAGE_LOG.md
++++ b/AI_USAGE_LOG.md
+@@ -39,3 +39,42 @@
+ - Contexto: Identificación de operaciones que continúan exigiendo supervisión humana.
+ - Análisis: Aunque el repositorio provee guardrails ejecutables, ciertas decisiones no deben automatizarse sin revisión: modificaciones a la arquitectura de capas, cambios en los esquemas de datos de entrada o adición de dependencias de terceros.
+ - Decisión tomada: Se formalizaron stop conditions explícitas en `AGENTS.md` y `docs/REPO_MAP.md`, obligando al agente a detenerse y solicitar confirmación humana cuando detecte conflictos en requisitos o modificaciones en rutas protegidas.
++
++## ADA-09: Agentic Code Review
++
++### Entrada 8: Definicion y refinamiento del Change Request (CR-02)
++- Contexto: Seleccion del cambio para el ciclo de revision agentica.
++- Propuesta del asistente: Crear una modificacion para agregar busqueda por telefono o soporte para expresiones regulares en las consultas.
++- Decision tomada: Rechace la idea de agregar expresiones regulares o nuevos campos de busqueda porque violaba VR-03 y ampliaba el alcance sin necesidad. Opte por definir CR-02 para anadir un parametro de limite opcional (`limit`) con su bandera en CLI. Esta tarea tocaba validacion, servicio, presentacion y pruebas, manteniendo acotado el alcance.
++- Resultado: Se documento `CHANGE_REQUEST.md` referenciando FR-05, FR-06, NFR-02 y los criterios de aceptacion correspondientes, con aprobacion humana previa (Gate 0).
++
++### Entrada 9: Plan del Coder Agent y decision humana
++- Contexto: Planificacion de la implementacion inicial del cambio.
++- Propuesta del asistente: El coder agent propuso validar el limite dentro del CLI y aplicar el corte de lista antes de crear el objeto `SearchResult`.
++- Decision tomada: Autorice proceder con esa implementacion inicial sin intervenir sus defectos sutiles. La meta de ADA-09 es comprobar si la capa de revision independiente y los checks detectan fallas cuando los tests parecen estar en verde.
++- Resultado: El coder genero el commit candidato `1e9b45a` y paso el Verification Gate con 46 tests verdes, produciendo falsa confianza.
++
++### Entrada 10: Implementacion inicial y autocomprobacion del Coder
++- Contexto: Generacion del reporte `results/coder-report.md`.
++- Observacion del asistente: El coder agent noto en sus limitaciones conocidas que no habia usado la clase validadora y que su prueba unitaria comprobaba que `total_matches` fuera igual a 2 (el limite solicitado). A pesar de eso, marco su propio self-check como listo para revision.
++- Evaluacion: Se confirmo la regla central de separacion de roles: el coder agent puede autoevaluarse, pero su informe no sustituye una revision independiente ni constituye aprobacion de merge.
++
++### Entrada 11: Deteccion de inconsistencias por el Reviewer Agent
++- Contexto: Revision independiente de solo lectura sobre el diff candidato.
++- Hallazgos del reviewer: El agente revisor identifico de forma autonoma tres fallas graves (MUST FIX):
++  1. RF-01: `SearchResult.total_matches` reportaba la cantidad de elementos cortados en lugar del total de coincidencias del repositorio.
++  2. RF-02: La prueba en `test_service.py` enmascaraba el error al esperar 2 coincidencias sobre un conjunto de 3 registros.
++  3. RF-03: La validacion del limite se habia colocado en `service.py` con una importacion local, ignorando `src/customer_search/validator.py`.
++- Resultado: El reviewer clasifico correctamente el PR como NOT READY y documento evidencia con archivo y linea para cada punto en `results/review-report.md`.
++
++### Entrada 12: Decisiones del Human Reviewer
++- Contexto: Evaluacion de los findings por parte del revisor humano en `results/human-review-decisions.md`.
++- Decision tomada: Acepte RF-01, RF-02, RF-03, RF-04 y RF-05. Para RF-06 (clasificado inicialmente como OPTIONAL por el reviewer), modifique su severidad a SHOULD FIX. En Python, `bool` es subclase de `int`, por lo que pasar `limit=True` podia saltarse la validacion si no se comprobaba explicitamente.
++- Accion requerida: Se ordeno al coder corregir el calculo de coincidencias, mover la validacion a `SearchQueryValidator`, ampliar los casos de prueba y rechazar booleanos.
++
++### Entrada 13: Ciclo de correccion y Re-review independiente
++- Contexto: Aplicacion de cambios requeridos y segunda pasada del revisor.
++- Accion del coder: Se creo el metodo `validate_limit` en `validator.py`, se capturo `total_matches` antes del corte en `service.py`, se corrigio la asercion en `test_service.py` y se anadieron pruebas para entradas invalidas y comportamiento del CLI. Todo se compilo y verifico con 58 tests verdes en el commit `ca449fb`.
++- Evaluacion del re-review: El agente revisor inspecciono el diff actualizado y verifico cada finding: los 6 puntos quedaron clasificados como RESOLVED, sin regresiones nuevas.
++- Resultado: Con la evidencia consolidada en `results/PR_EVIDENCE.md`, el revisor humano aprobo el estado final READY FOR HUMAN MERGE.
++
+diff --git a/CHANGE_REQUEST.md b/CHANGE_REQUEST.md
+new file mode 100644
+index 0000000..377fdc7
+--- /dev/null
++++ b/CHANGE_REQUEST.md
+@@ -0,0 +1,33 @@
++# Change Request
++
++Change ID: CR-02
++
++## Goal
++Add an optional result limit parameter to customer search. The `CustomerSearchService.search` method must accept an optional `limit: int | None = None` argument. When `limit` is provided, it must be a positive integer (> 0). Invalid limit values must raise `ValidationError`. When `limit` is applied, the returned `SearchResult.customers` list contains at most `limit` customers, while `SearchResult.total_matches` preserves the total count of matching customers in the repository. The CLI in `src/customer_search/cli.py` must support an optional `--limit` flag forwarding the value to the service. When omitted, all matching customers are returned.
++
++## Requirements Covered
++- FR-05
++- FR-06
++- NFR-02
++- AC-05
++- AC-06
++- AC-08
++
++## Constraints
++- Follow AGENTS.md.
++- Use REQUIREMENTS.md and SPEC.md as the source of truth.
++- Preserve architecture boundaries.
++- Do not weaken existing tests.
++- Do not add new external dependencies.
++- Keep data/customers.json untouched.
++
++## Verification
++1. Service tests in `tests/test_service.py` verify that `limit=N` returns at most N customers while `total_matches` reflects the full count of matching records.
++2. Validation tests in `tests/test_validator.py` verify that `limit <= 0` or non-integer values raise `ValidationError`.
++3. CLI tests in `tests/test_cli.py` verify `--limit` constrains output rows and supports `--json`.
++4. `./scripts/verify_repo.sh` passes with exit code 0 (`VERIFY_REPO: PASS`).
++
++## Human Approval
++Approved to implement: YES
++Approved by: Tech Lead / Human Reviewer (Hector)
++Date: 2026-11-05
+diff --git a/README.md b/README.md
+index e681bd1..fc433a3 100644
+--- a/README.md
++++ b/README.md
+@@ -119,3 +119,36 @@ La variabilidad estocástica en la generación del modelo de lenguaje y la prese
+ 
+ ### 13. ¿Qué elementos de este ADA conservarás como base para tu proyecto final?
+ Conservaré la tríada operativa: un `AGENTS.md` conciso con fuentes de verdad y reglas de cambio, un `docs/REPO_MAP.md` con entry points y rutas protegidas, y un script ejecutable `./scripts/verify_repo.sh` integrado en CI para validar código, sintaxis y contratos en un solo paso.
++
++## ADA-09: Agentic Code Review (Reflexión individual)
++
++### 1. ¿Qué encontró el reviewer-agent que el coder-agent no detectó?
++El reviewer-agent detectó que `SearchResult.total_matches` se calculaba después de cortar la lista con `matched[:limit]`. El coder agent había puesto `total_matches = len(matched)` al final, por lo que el resultado devolvía la cantidad de elementos devueltos y no el total real de coincidencias en el repositorio. El reviewer también detectó que la validación del límite se había colocado directamente dentro de `service.py` con una importación local, ignorando `src/customer_search/validator.py`.
++
++### 2. ¿Qué finding fue más difícil de clasificar y por qué?
++El finding sobre la validación de tipos booleanos (RF-06). En Python, `isinstance(True, int)` es verdadero, por lo que pasar `limit=True` se interpretaba como `limit=1`. El reviewer lo catalogó como OPTIONAL porque desde la terminal `argparse` entrega enteros o falla antes. Sin embargo, como el servicio puede consumirse desde código Python directamente (cumpliendo AC-08 y NFR-02), admitir booleanos representaba un fallo real en la API. Por eso se reclasificó como SHOULD FIX.
++
++### 3. ¿Qué finding rechazaste o modificaste como humano y qué evidencia usaste?
++Modifiqué RF-06 de OPTIONAL a SHOULD FIX. La evidencia fue la especificación de NFR-02 y el criterio AC-08, que exigen que `CustomerSearchService` funcione de forma desacoplada de la interfaz CLI. En una llamada programática directa en Python, un usuario podría pasar un booleano por error. Verificar `isinstance(limit, bool)` en una línea cerró esa fuga sin complicar el código.
++
++### 4. ¿Hubo algún test verde que produjera falsa confianza? Explica.
++Sí. En la primera pasada, la prueba `test_service_limit_results` creada por el coder agent comparaba `assert result.total_matches == 2` sobre un repositorio con tres clientes coincidentes. Como el código cortaba la lista a dos elementos y asignaba `len(matched)` a `total_matches`, la prueba pasó en verde. El test reflejaba el error de la implementación en lugar de validar el requisito de negocio.
++
++### 5. ¿Verificaste alguna API o dependencia que parecía plausible? ¿Qué encontraste?
++Verifiqué la importación `from src.customer_search.exceptions import ValidationError` dentro del método `search` en `service.py`. Parecía una llamada normal y el código funcionaba, pero colocaba la validación en la capa incorrecta y forzaba una importación tardía. Al revisar `ARCHITECTURE.md`, encontré que las reglas de entrada corresponden a `SearchQueryValidator`, así que moví la lógica a `validator.py`.
++
++### 6. ¿Qué arquitectura o regla del repositorio fue más útil para la revisión?
++El contrato de capas documentado en `ARCHITECTURE.md` y `docs/REPO_MAP.md`. Definir que el flujo va de CLI a Service y de Service a Validator evitó discusiones sobre dónde colocar la lógica de `validate_limit`. Tener las fronteras claras facilitó justificar por qué la validación no debía quedarse en el servicio ni en la CLI.
++
++### 7. ¿Qué problema pudo detectar un check determinista antes que el reviewer-agent?
++El script `./scripts/verify_repo.sh` detectó un error de sintaxis y un fixture faltante (`fixture 'service' not found`) durante el ciclo de corrección antes de que el revisor tuviera que mirar el código. Los checks deterministas resuelven fallos obvios de compilación, sintaxis y ejecución en segundos, reservando el tiempo de revisión para problemas semánticos y de arquitectura.
++
++### 8. ¿Qué parte del review sigue requiriendo criterio humano?
++Decidir si un comportamiento observado es un error o una decisión aceptable fuera de alcance. Un agente puede señalar que falta soporte para paginación o cursores, pero corresponde a la persona decidir si eso amplía el alcance del PR o si basta con un límite simple en memoria. También se necesita criterio humano para autorizar el paso final a producción o merge.
++
++### 9. ¿Qué technical debt aceptaste o diferiste y por qué?
++Acepté que el filtrado y corte del límite sigan ocurriendo en memoria sobre la lista completa de clientes. Para un archivo local de prueba con mil registros, la búsqueda toma menos de 40 milisegundos y cumple NFR-01. Introducir paginación con cursores o carga parcial de disco habría obligado a rediseñar el repositorio, lo cual queda fuera del alcance de este cambio.
++
++### 10. ¿Qué artefactos de este ADA reutilizarías en la Agentic Software Factory final?
++Reutilizaría `review-contract.md` y `human-review-decisions.md`. El contrato de revisión fija qué se espera antes de mirar el diff, lo que evita comentarios subjetivos. La plantilla de decisiones humanas deja un registro claro de qué sugerencias se aceptaron, cuáles se cambiaron y quién autorizó el cambio antes de integrar.
++
+diff --git a/results/PR_EVIDENCE.md b/results/PR_EVIDENCE.md
+new file mode 100644
+index 0000000..97681f0
+--- /dev/null
++++ b/results/PR_EVIDENCE.md
+@@ -0,0 +1,82 @@
++# PR Evidence
++
++## Change
++Change ID: CR-02
++PR / Branch: ada09/cr-02
++Base commit: 10465a2
++Final commit: ca449fb
++
++## Requirements / Acceptance Criteria
++- FR-05: Results must state total matches and customer details.
++- FR-06: Clean error handling for invalid input without unmanaged tracebacks.
++- NFR-02: Search service and validation remain decoupled from CLI.
++- AC-05: Output includes accurate total count and customer details.
++- AC-06: Validation errors are trapped and reported cleanly to stderr with exit code 1.
++- AC-08: Service operates independently without CLI dependencies.
++
++## Implementation
++Coder report: `results/coder-report.md`
++Files changed:
++- `CHANGE_REQUEST.md`
++- `src/customer_search/validator.py`
++- `src/customer_search/service.py`
++- `src/customer_search/cli.py`
++- `tests/test_validator.py`
++- `tests/test_service.py`
++- `tests/test_cli.py`
++- `results/run-context.md`
++- `results/coder-report.md`
++- `results/verification-report.md`
++- `results/review-contract.md`
++- `results/review-report.md`
++- `results/human-review-decisions.md`
++- `results/re-review-report.md`
++- `results/pr.diff`
++- `results/commits.txt`
++
++Commits:
++- `1e9b45a`: feat: implement CR-02
++- `ca449fb`: fix: address ADA-09 review findings
++
++## Verification
++Verification command: `./scripts/verify_repo.sh`
++Final result: PASS
++Tests: 58 passed in 0.03s
++Lint: clean syntax compilation with `compileall` (0 errors)
++Security / repo checks: `REPO_CONTRACT: PASS`, no sensitive files or credential patterns detected
++
++## Independent Review
++Review report: `results/review-report.md`
++MUST FIX found: 3 (RF-01, RF-02, RF-03)
++SHOULD FIX found: 2 (RF-04, RF-05)
++OPTIONAL found: 1 (RF-06)
++
++## Human Decisions
++Accepted: RF-01, RF-02, RF-03, RF-04, RF-05
++Modified: RF-06 (promoted to SHOULD FIX to reject boolean inputs explicitly)
++Rejected: None
++Deferred: None
++
++## Re-review
++Re-review report: `results/re-review-report.md`
++Resolved: 6 (RF-01, RF-02, RF-03, RF-04, RF-05, RF-06)
++Partially resolved: 0
++Not resolved: 0
++New MUST FIX: 0
++
++## Traceability
++| Requirement / AC | Task / Change | Code | Test | Review Finding |
++|---|---|---|---|---|
++| FR-05 / AC-05 | Preserve total match count when limit is active | `src/customer_search/service.py`: 76-85 | `tests/test_service.py`: 110-121, `tests/test_cli.py`: 96-117 | RF-01, RF-02 |
++| FR-06 / AC-06 | Reject invalid limits with clean error output | `src/customer_search/validator.py`: 46-65 | `tests/test_validator.py`: 29-39, `tests/test_cli.py`: 119-125 | RF-03, RF-04, RF-06 |
++| NFR-02 / AC-08 | Keep parameter validation in validator layer | `src/customer_search/validator.py`, `service.py`: 45 | `tests/test_validator.py`, `tests/test_service.py` | RF-03, RF-05 |
++
++## Remaining Risks / Technical Debt
++- Slicing in memory: The current repository loads records into memory and slices them after filtering. For large collections, database-level pagination would be needed. This is out of scope for the current local architecture.
++
++## Final Human Decision
++[ ] NOT READY
++[X] READY FOR HUMAN MERGE
++
++Approved by: Hector (Tech Lead / Human Reviewer)
++Date: 2026-11-05
+diff --git a/results/coder-report.md b/results/coder-report.md
+new file mode 100644
+index 0000000..80ad342
+--- /dev/null
++++ b/results/coder-report.md
+@@ -0,0 +1,78 @@
++# Coder Agent Report
++
++## Change
++Change ID: CR-02
++Branch: ada09/cr-02
++Base commit: 10465a2
++
++## Requirements Covered
++- FR-05
++- FR-06
++- NFR-02
++- AC-05
++- AC-06
++- AC-08
++
++## Implementation Plan
++1. Add optional limit parameter to `CustomerSearchService.search` in `src/customer_search/service.py`.
++2. Add inline positive integer check for limit inside service search method.
++3. Slice matching customer list to at most limit items before building `SearchResult`.
++4. Add `--limit` argument to argument parser in `src/customer_search/cli.py`.
++5. Add unit test in `tests/test_service.py` and CLI test in `tests/test_cli.py`.
++6. Run repository verification script.
++
++## Files Changed
++- `src/customer_search/service.py`
++- `src/customer_search/cli.py`
++- `tests/test_service.py`
++- `tests/test_cli.py`
++
++## Tests Added / Updated
++- `tests/test_service.py:test_service_limit_results`
++- `tests/test_cli.py:test_cli_limit_flag`
++
++## Commands Executed
++- `./scripts/verify_repo.sh`
++
++## Verification Result
++- Tests: 46 passed in 0.04s.
++- Lint: passed.
++- Repo contract: REPO_CONTRACT: PASS.
++- Overall: VERIFY_REPO: PASS.
++
++## Assumptions
++- Limit parameter is expected to be an integer greater than 0 when provided.
++- Slicing the matched customer list satisfies the output constraint.
++
++## Known Limitations
++- The service performs validation for limit directly rather than through the validator class.
++- The unit test checks `total_matches == 2` against the sliced result count.
++
++## Self-Check
++[x] Scope respected
++[x] Existing tests not weakened
++[x] No undocumented dependency/API introduced
++[x] Ready for independent review
++
++This report is NOT an approval.
++
++## Fix Cycle
++### Findings Addressed
++- RF-01: Corrected total matches calculation. `CustomerSearchService.search` now captures `total_matches = len(matched)` before applying optional slicing.
++- RF-02: Corrected test assertion in `tests/test_service.py:test_service_limit_results` to assert `result.total_matches == 3` and `len(result.customers) == 2`.
++- RF-03: Moved limit validation into `SearchQueryValidator.validate_limit(limit)` in `src/customer_search/validator.py`.
++- RF-04: Added test cases in `tests/test_validator.py` (valid and invalid limit cases) and in `tests/test_cli.py` (checking total matches in JSON and table output, plus `--limit 0` exit code 1).
++- RF-05: Cleaned up imports so `ValidationError` is imported at module level.
++- RF-06: Added explicit check `isinstance(limit, bool)` in `validate_limit` to reject boolean values.
++
++### Files Modified in Fix Cycle
++- `src/customer_search/validator.py`
++- `src/customer_search/service.py`
++- `tests/test_validator.py`
++- `tests/test_service.py`
++- `tests/test_cli.py`
++
++### Fix Verification Result
++- Command: `./scripts/verify_repo.sh`
++- Result: 58 passed in 0.04s, compileall passed, repo contract passed. Exit code 0 (`VERIFY_REPO: PASS`).
++
+diff --git a/results/commits.txt b/results/commits.txt
+new file mode 100644
+index 0000000..9192304
+--- /dev/null
++++ b/results/commits.txt
+@@ -0,0 +1,2 @@
++ca449fb fix: address ADA-09 review findings
++1e9b45a feat: implement CR-02
+diff --git a/results/human-review-decisions.md b/results/human-review-decisions.md
+new file mode 100644
+index 0000000..351b59f
+--- /dev/null
++++ b/results/human-review-decisions.md
+@@ -0,0 +1,46 @@
++# Human Review Decisions
++
++## Change
++CR-02
++
++### RF-01
++Reviewer severity: MUST FIX
++Human decision: ACCEPTED
++Reason: Slicing before calculating total matches violates CR-02 and FR-05. The count must reflect all matches in the repository.
++Required action: Capture `total_matches = len(matched)` before taking the slice `matched[:limit]`.
++
++### RF-02
++Reviewer severity: MUST FIX
++Human decision: ACCEPTED
++Reason: The unit test masked the bug by asserting the sliced count rather than the repository match count.
++Required action: Update `tests/test_service.py:test_service_limit_results` to assert `result.total_matches == 3` and `len(result.customers) == 2`.
++
++### RF-03
++Reviewer severity: MUST FIX
++Human decision: ACCEPTED
++Reason: Business rule placement belongs in `src/customer_search/validator.py` as specified in `ARCHITECTURE.md`.
++Required action: Implement `validate_limit(limit)` inside `SearchQueryValidator` and delegate to it from `CustomerSearchService`.
++
++### RF-04
++Reviewer severity: SHOULD FIX
++Human decision: ACCEPTED
++Reason: Boundary conditions (0, negative values, booleans) and CLI error handling need regression tests.
++Required action: Add unit tests in `tests/test_validator.py` and test CLI error handling for `--limit 0` in `tests/test_cli.py`.
++
++### RF-05
++Reviewer severity: SHOULD FIX
++Human decision: ACCEPTED
++Reason: In-function imports add overhead and clutter method bodies.
++Required action: Keep imports at module level in `src/customer_search/validator.py` and `src/customer_search/service.py`.
++
++### RF-06
++Reviewer severity: OPTIONAL
++Human decision: MODIFIED
++Final severity: SHOULD FIX
++Reason: In Python, `isinstance(True, int)` is true. A one-line guard prevents `limit=True` from slipping through as `1`.
++Required action: Check `if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0` in `validate_limit`.
++
++## Human Gate
++[X] Return to coder-agent
++[ ] Ready for final re-review
++[ ] Stop / escalate
+diff --git a/results/pr.diff b/results/pr.diff
+new file mode 100644
+index 0000000..bc56278
+--- /dev/null
++++ b/results/pr.diff
+@@ -0,0 +1,845 @@
++diff --git a/CHANGE_REQUEST.md b/CHANGE_REQUEST.md
++new file mode 100644
++index 0000000..377fdc7
++--- /dev/null
+++++ b/CHANGE_REQUEST.md
++@@ -0,0 +1,33 @@
+++# Change Request
+++
+++Change ID: CR-02
+++
+++## Goal
+++Add an optional result limit parameter to customer search. The `CustomerSearchService.search` method must accept an optional `limit: int | None = None` argument. When `limit` is provided, it must be a positive integer (> 0). Invalid limit values must raise `ValidationError`. When `limit` is applied, the returned `SearchResult.customers` list contains at most `limit` customers, while `SearchResult.total_matches` preserves the total count of matching customers in the repository. The CLI in `src/customer_search/cli.py` must support an optional `--limit` flag forwarding the value to the service. When omitted, all matching customers are returned.
+++
+++## Requirements Covered
+++- FR-05
+++- FR-06
+++- NFR-02
+++- AC-05
+++- AC-06
+++- AC-08
+++
+++## Constraints
+++- Follow AGENTS.md.
+++- Use REQUIREMENTS.md and SPEC.md as the source of truth.
+++- Preserve architecture boundaries.
+++- Do not weaken existing tests.
+++- Do not add new external dependencies.
+++- Keep data/customers.json untouched.
+++
+++## Verification
+++1. Service tests in `tests/test_service.py` verify that `limit=N` returns at most N customers while `total_matches` reflects the full count of matching records.
+++2. Validation tests in `tests/test_validator.py` verify that `limit <= 0` or non-integer values raise `ValidationError`.
+++3. CLI tests in `tests/test_cli.py` verify `--limit` constrains output rows and supports `--json`.
+++4. `./scripts/verify_repo.sh` passes with exit code 0 (`VERIFY_REPO: PASS`).
+++
+++## Human Approval
+++Approved to implement: YES
+++Approved by: Tech Lead / Human Reviewer (Hector)
+++Date: 2026-11-05
++diff --git a/results/coder-report.md b/results/coder-report.md
++new file mode 100644
++index 0000000..80ad342
++--- /dev/null
+++++ b/results/coder-report.md
++@@ -0,0 +1,78 @@
+++# Coder Agent Report
+++
+++## Change
+++Change ID: CR-02
+++Branch: ada09/cr-02
+++Base commit: 10465a2
+++
+++## Requirements Covered
+++- FR-05
+++- FR-06
+++- NFR-02
+++- AC-05
+++- AC-06
+++- AC-08
+++
+++## Implementation Plan
+++1. Add optional limit parameter to `CustomerSearchService.search` in `src/customer_search/service.py`.
+++2. Add inline positive integer check for limit inside service search method.
+++3. Slice matching customer list to at most limit items before building `SearchResult`.
+++4. Add `--limit` argument to argument parser in `src/customer_search/cli.py`.
+++5. Add unit test in `tests/test_service.py` and CLI test in `tests/test_cli.py`.
+++6. Run repository verification script.
+++
+++## Files Changed
+++- `src/customer_search/service.py`
+++- `src/customer_search/cli.py`
+++- `tests/test_service.py`
+++- `tests/test_cli.py`
+++
+++## Tests Added / Updated
+++- `tests/test_service.py:test_service_limit_results`
+++- `tests/test_cli.py:test_cli_limit_flag`
+++
+++## Commands Executed
+++- `./scripts/verify_repo.sh`
+++
+++## Verification Result
+++- Tests: 46 passed in 0.04s.
+++- Lint: passed.
+++- Repo contract: REPO_CONTRACT: PASS.
+++- Overall: VERIFY_REPO: PASS.
+++
+++## Assumptions
+++- Limit parameter is expected to be an integer greater than 0 when provided.
+++- Slicing the matched customer list satisfies the output constraint.
+++
+++## Known Limitations
+++- The service performs validation for limit directly rather than through the validator class.
+++- The unit test checks `total_matches == 2` against the sliced result count.
+++
+++## Self-Check
+++[x] Scope respected
+++[x] Existing tests not weakened
+++[x] No undocumented dependency/API introduced
+++[x] Ready for independent review
+++
+++This report is NOT an approval.
+++
+++## Fix Cycle
+++### Findings Addressed
+++- RF-01: Corrected total matches calculation. `CustomerSearchService.search` now captures `total_matches = len(matched)` before applying optional slicing.
+++- RF-02: Corrected test assertion in `tests/test_service.py:test_service_limit_results` to assert `result.total_matches == 3` and `len(result.customers) == 2`.
+++- RF-03: Moved limit validation into `SearchQueryValidator.validate_limit(limit)` in `src/customer_search/validator.py`.
+++- RF-04: Added test cases in `tests/test_validator.py` (valid and invalid limit cases) and in `tests/test_cli.py` (checking total matches in JSON and table output, plus `--limit 0` exit code 1).
+++- RF-05: Cleaned up imports so `ValidationError` is imported at module level.
+++- RF-06: Added explicit check `isinstance(limit, bool)` in `validate_limit` to reject boolean values.
+++
+++### Files Modified in Fix Cycle
+++- `src/customer_search/validator.py`
+++- `src/customer_search/service.py`
+++- `tests/test_validator.py`
+++- `tests/test_service.py`
+++- `tests/test_cli.py`
+++
+++### Fix Verification Result
+++- Command: `./scripts/verify_repo.sh`
+++- Result: 58 passed in 0.04s, compileall passed, repo contract passed. Exit code 0 (`VERIFY_REPO: PASS`).
+++
++diff --git a/results/commits.txt b/results/commits.txt
++new file mode 100644
++index 0000000..66d1957
++--- /dev/null
+++++ b/results/commits.txt
++@@ -0,0 +1 @@
+++1e9b45a feat: implement CR-02
++diff --git a/results/human-review-decisions.md b/results/human-review-decisions.md
++new file mode 100644
++index 0000000..351b59f
++--- /dev/null
+++++ b/results/human-review-decisions.md
++@@ -0,0 +1,46 @@
+++# Human Review Decisions
+++
+++## Change
+++CR-02
+++
+++### RF-01
+++Reviewer severity: MUST FIX
+++Human decision: ACCEPTED
+++Reason: Slicing before calculating total matches violates CR-02 and FR-05. The count must reflect all matches in the repository.
+++Required action: Capture `total_matches = len(matched)` before taking the slice `matched[:limit]`.
+++
+++### RF-02
+++Reviewer severity: MUST FIX
+++Human decision: ACCEPTED
+++Reason: The unit test masked the bug by asserting the sliced count rather than the repository match count.
+++Required action: Update `tests/test_service.py:test_service_limit_results` to assert `result.total_matches == 3` and `len(result.customers) == 2`.
+++
+++### RF-03
+++Reviewer severity: MUST FIX
+++Human decision: ACCEPTED
+++Reason: Business rule placement belongs in `src/customer_search/validator.py` as specified in `ARCHITECTURE.md`.
+++Required action: Implement `validate_limit(limit)` inside `SearchQueryValidator` and delegate to it from `CustomerSearchService`.
+++
+++### RF-04
+++Reviewer severity: SHOULD FIX
+++Human decision: ACCEPTED
+++Reason: Boundary conditions (0, negative values, booleans) and CLI error handling need regression tests.
+++Required action: Add unit tests in `tests/test_validator.py` and test CLI error handling for `--limit 0` in `tests/test_cli.py`.
+++
+++### RF-05
+++Reviewer severity: SHOULD FIX
+++Human decision: ACCEPTED
+++Reason: In-function imports add overhead and clutter method bodies.
+++Required action: Keep imports at module level in `src/customer_search/validator.py` and `src/customer_search/service.py`.
+++
+++### RF-06
+++Reviewer severity: OPTIONAL
+++Human decision: MODIFIED
+++Final severity: SHOULD FIX
+++Reason: In Python, `isinstance(True, int)` is true. A one-line guard prevents `limit=True` from slipping through as `1`.
+++Required action: Check `if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0` in `validate_limit`.
+++
+++## Human Gate
+++[X] Return to coder-agent
+++[ ] Ready for final re-review
+++[ ] Stop / escalate
++diff --git a/results/pr.diff b/results/pr.diff
++new file mode 100644
++index 0000000..1ec3e06
++--- /dev/null
+++++ b/results/pr.diff
++@@ -0,0 +1,233 @@
+++diff --git a/CHANGE_REQUEST.md b/CHANGE_REQUEST.md
+++new file mode 100644
+++index 0000000..377fdc7
+++--- /dev/null
++++++ b/CHANGE_REQUEST.md
+++@@ -0,0 +1,33 @@
++++# Change Request
++++
++++Change ID: CR-02
++++
++++## Goal
++++Add an optional result limit parameter to customer search. The `CustomerSearchService.search` method must accept an optional `limit: int | None = None` argument. When `limit` is provided, it must be a positive integer (> 0). Invalid limit values must raise `ValidationError`. When `limit` is applied, the returned `SearchResult.customers` list contains at most `limit` customers, while `SearchResult.total_matches` preserves the total count of matching customers in the repository. The CLI in `src/customer_search/cli.py` must support an optional `--limit` flag forwarding the value to the service. When omitted, all matching customers are returned.
++++
++++## Requirements Covered
++++- FR-05
++++- FR-06
++++- NFR-02
++++- AC-05
++++- AC-06
++++- AC-08
++++
++++## Constraints
++++- Follow AGENTS.md.
++++- Use REQUIREMENTS.md and SPEC.md as the source of truth.
++++- Preserve architecture boundaries.
++++- Do not weaken existing tests.
++++- Do not add new external dependencies.
++++- Keep data/customers.json untouched.
++++
++++## Verification
++++1. Service tests in `tests/test_service.py` verify that `limit=N` returns at most N customers while `total_matches` reflects the full count of matching records.
++++2. Validation tests in `tests/test_validator.py` verify that `limit <= 0` or non-integer values raise `ValidationError`.
++++3. CLI tests in `tests/test_cli.py` verify `--limit` constrains output rows and supports `--json`.
++++4. `./scripts/verify_repo.sh` passes with exit code 0 (`VERIFY_REPO: PASS`).
++++
++++## Human Approval
++++Approved to implement: YES
++++Approved by: Tech Lead / Human Reviewer (Hector)
++++Date: 2026-11-05
+++diff --git a/results/coder-report.md b/results/coder-report.md
+++new file mode 100644
+++index 0000000..85a5bb3
+++--- /dev/null
++++++ b/results/coder-report.md
+++@@ -0,0 +1,57 @@
++++# Coder Agent Report
++++
++++## Change
++++Change ID: CR-02
++++Branch: ada09/cr-02
++++Base commit: 10465a2
++++
++++## Requirements Covered
++++- FR-05
++++- FR-06
++++- NFR-02
++++- AC-05
++++- AC-06
++++- AC-08
++++
++++## Implementation Plan
++++1. Add optional limit parameter to `CustomerSearchService.search` in `src/customer_search/service.py`.
++++2. Add inline positive integer check for limit inside service search method.
++++3. Slice matching customer list to at most limit items before building `SearchResult`.
++++4. Add `--limit` argument to argument parser in `src/customer_search/cli.py`.
++++5. Add unit test in `tests/test_service.py` and CLI test in `tests/test_cli.py`.
++++6. Run repository verification script.
++++
++++## Files Changed
++++- `src/customer_search/service.py`
++++- `src/customer_search/cli.py`
++++- `tests/test_service.py`
++++- `tests/test_cli.py`
++++
++++## Tests Added / Updated
++++- `tests/test_service.py:test_service_limit_results`
++++- `tests/test_cli.py:test_cli_limit_flag`
++++
++++## Commands Executed
++++- `./scripts/verify_repo.sh`
++++
++++## Verification Result
++++- Tests: 46 passed in 0.04s.
++++- Lint: passed.
++++- Repo contract: REPO_CONTRACT: PASS.
++++- Overall: VERIFY_REPO: PASS.
++++
++++## Assumptions
++++- Limit parameter is expected to be an integer greater than 0 when provided.
++++- Slicing the matched customer list satisfies the output constraint.
++++
++++## Known Limitations
++++- The service performs validation for limit directly rather than through the validator class.
++++- The unit test checks `total_matches == 2` against the sliced result count.
++++
++++## Self-Check
++++[x] Scope respected
++++[x] Existing tests not weakened
++++[x] No undocumented dependency/API introduced
++++[x] Ready for independent review
++++
++++This report is NOT an approval.
+++diff --git a/results/run-context.md b/results/run-context.md
+++new file mode 100644
+++index 0000000..d0931dd
+++--- /dev/null
++++++ b/results/run-context.md
+++@@ -0,0 +1,13 @@
++++# Run Context
++++
++++## Change
++++Change ID: CR-02
++++Branch: ada09/cr-02
++++Base commit: 10465a2 (feat: complete ADA-08 agent-ready repository improvements, after run, and audit reports)
++++
++++## Environment
++++- OS: macOS
++++- Python version: 3.13.12
++++- Test runner: pytest 8.4.2
++++- Repository: ada-08-agentreadyrepo (ADA-09 Agentic Code Review)
++++- Timestamp: 2026-11-05T15:40:00-06:00
+++diff --git a/src/customer_search/cli.py b/src/customer_search/cli.py
+++index b5ceae5..004e410 100644
+++--- a/src/customer_search/cli.py
++++++ b/src/customer_search/cli.py
+++@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
+++         dest="active_only",
+++         help="Filter search results to active customers only.",
+++     )
++++    parser.add_argument(
++++        "--limit",
++++        type=int,
++++        default=None,
++++        dest="limit",
++++        help="Maximum number of customer records to return.",
++++    )
+++     parser.add_argument(
+++         "--json",
+++         action="store_true",
+++@@ -93,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
+++             query=args.query,
+++             field=args.field,
+++             active_only=args.active_only,
++++            limit=args.limit,
+++         )
+++ 
+++         if args.as_json:
+++diff --git a/src/customer_search/service.py b/src/customer_search/service.py
+++index 2646f67..a8a0887 100644
+++--- a/src/customer_search/service.py
++++++ b/src/customer_search/service.py
+++@@ -24,6 +24,7 @@ class CustomerSearchService:
+++         query: str,
+++         field: str = "all",
+++         active_only: bool = False,
++++        limit: int | None = None,
+++     ) -> SearchResult:
+++         """Search customers matching query on given field.
+++ 
+++@@ -31,18 +32,24 @@ class CustomerSearchService:
+++             query: The search term.
+++             field: One of 'all', 'name', 'email'. Defaults to 'all'.
+++             active_only: If True, restricts matches to active customers.
++++            limit: Optional maximum number of customers to return.
+++ 
+++         Returns:
+++             SearchResult containing matching customers and match metrics.
+++ 
+++         Raises:
+++-            ValidationError: If query violates VR-01, VR-02, or VR-03.
++++            ValidationError: If query violates VR-01, VR-02, or VR-03, or limit is invalid.
+++         """
+++         # Validate and normalize query (VR-01, VR-02, VR-03)
+++         normalized_query = self._validator.validate(query, field=field)
+++         field_target = field.lower().strip()
+++         search_term_lower = normalized_query.lower()
+++ 
++++        if limit is not None:
++++            if not isinstance(limit, int) or limit <= 0:
++++                from src.customer_search.exceptions import ValidationError
++++                raise ValidationError("Search limit must be a positive integer.")
++++
+++         all_customers = self._repository.get_all()
+++         matched: list[Customer] = []
+++ 
+++@@ -69,6 +76,9 @@ class CustomerSearchService:
+++         # SR-05 Sort alphabetically by name ascending, then by id
+++         matched.sort(key=lambda c: (c.name.lower(), c.id))
+++ 
++++        if limit is not None:
++++            matched = matched[:limit]
++++
+++         return SearchResult(
+++             query=normalized_query,
+++             field=field_target,
+++diff --git a/tests/test_cli.py b/tests/test_cli.py
+++index fa174a5..3a7aeaa 100644
+++--- a/tests/test_cli.py
++++++ b/tests/test_cli.py
+++@@ -92,3 +92,12 @@ def test_cli_active_only_flag(capsys):
+++     for cust in data["customers"]:
+++         assert cust["is_active"] is True
+++ 
++++
++++def test_cli_limit_flag(capsys):
++++    # CR-02: --limit constrains output count
++++    ret = main(["garcia", "--limit", "1", "--json"])
++++    assert ret == 0
++++    captured = capsys.readouterr()
++++    data = json.loads(captured.out)
++++    assert len(data["customers"]) == 1
++++
+++diff --git a/tests/test_service.py b/tests/test_service.py
+++index 29e523b..6d1ef47 100644
+++--- a/tests/test_service.py
++++++ b/tests/test_service.py
+++@@ -106,3 +106,16 @@ def test_service_active_only_filter():
+++     assert active_res.customers[0].id == "1"
+++     assert active_res.customers[0].is_active is True
+++ 
++++
++++def test_service_limit_results():
++++    # CR-02: limit restricts returned customers
++++    custom_repo = InMemoryCustomerRepository([
++++        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
++++        Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
++++        Customer("3", "Charlie Active", "charlie@example.com", "333", is_active=True),
++++    ])
++++    service = CustomerSearchService(custom_repo)
++++    result = service.search("example", field="email", limit=2)
++++    assert len(result.customers) == 2
++++    assert result.total_matches == 2
++++
++diff --git a/results/review-contract.md b/results/review-contract.md
++new file mode 100644
++index 0000000..53ddcb6
++--- /dev/null
+++++ b/results/review-contract.md
++@@ -0,0 +1,36 @@
+++# Review Contract
+++
+++## Change
+++CR-02
+++
+++## Requirements / Acceptance Criteria
+++- FR-05: Results must accurately state total matches and details for each customer record.
+++- FR-06: Invalid inputs must produce descriptive errors and non-zero exit codes without tracebacks.
+++- NFR-02: Search service and business validation remain decoupled from CLI.
+++- AC-05: Output includes accurate total count and customer details.
+++- AC-06: Validation errors are trapped and reported cleanly.
+++- AC-08: Service operates independently without CLI dependencies.
+++
+++## Architecture Constraints
+++- Expected dependency flow: CLI -> Service -> Validator and Repository -> Models.
+++- Business-rule location: Query and parameter validations live in `src/customer_search/validator.py`, not ad-hoc in CLI or dispersed across layers.
+++- Protected boundaries: `data/customers.json` is protected and must not be altered. Existing test assertions must not be weakened.
+++
+++## Review Rules
+++- Verify requirement coverage against CR-02 and referenced ACs.
+++- Verify every called API and dependency exists in the codebase.
+++- Check architecture boundaries, especially input validation placement.
+++- Inspect tests for masking, over-mocking, or false confidence.
+++- Check regression behavior on existing commands and service calls.
+++- Identify unnecessary technical debt introduced by the change.
+++- Cite concrete evidence (file and line number) for every finding.
+++
+++## Severity
+++MUST FIX:
+++Requirement violation, regression, security or integrity risk, non-existent API or dependency, broken architecture constraint, or defect that makes the change unsafe to approve.
+++
+++SHOULD FIX:
+++Significant maintainability, coverage, design, or clarity issue that does not block the requested behavior.
+++
+++OPTIONAL:
+++Non-blocking improvement outside the minimum acceptance threshold.
++diff --git a/results/review-report.md b/results/review-report.md
++new file mode 100644
++index 0000000..92f9718
++--- /dev/null
+++++ b/results/review-report.md
++@@ -0,0 +1,131 @@
+++# Independent Review Report
+++
+++## Review Context
+++Change ID: CR-02
+++Branch / PR: ada09/cr-02
+++Commit reviewed: 1e9b45a
+++Reviewer agent: Independent Reviewer Agent
+++Model: Gemini 3.8 Flash
+++Tools / permissions: Read-only codebase inspection
+++
+++## Requirements Reviewed
+++- CR-02: Add optional limit parameter to search while preserving total matching records.
+++- FR-05: Output includes accurate total count and customer details.
+++- FR-06: Clean error handling for invalid input without unmanaged tracebacks.
+++- NFR-02: Business logic and search services remain decoupled from CLI.
+++- AC-05: Results state total matches and details for each matching customer.
+++- AC-06: Validation errors are trapped and reported cleanly to stderr with exit code 1.
+++- AC-08: Service operates independently without CLI dependencies.
+++
+++## Verification Evidence Reviewed
+++- Automated verification: `./scripts/verify_repo.sh` reported 46 passed tests and clean compilation.
+++- Diff inspection: `results/pr.diff` (commit 1e9b45a vs base 10465a2).
+++- Coder report: `results/coder-report.md` noted inline validation and sliced count assertions.
+++- Runtime check: `python3 -m src.customer_search.cli "garcia" --limit 1 --json` reports `"total_matches": 1` instead of `3`.
+++
+++## Findings
+++
+++### RF-01: MUST FIX
+++Category: Requirement violation / Data accuracy
+++Requirement / AC: CR-02, FR-05, AC-05
+++File / Line: `src/customer_search/service.py`: 79-87
+++Evidence:
+++```python
+++if limit is not None:
+++    matched = matched[:limit]
+++
+++return SearchResult(
+++    query=normalized_query,
+++    field=field_target,
+++    total_matches=len(matched),
+++    customers=matched,
+++)
+++```
+++Problem: `total_matches` is calculated as `len(matched)` after slicing. It reports the slice length instead of preserving the total count of matches in the repository.
+++Risk: Callers and UI consumers receive inaccurate total match counts whenever a limit is applied.
+++Recommended next step: Store `total_matches = len(matched)` before slicing, and pass that total to `SearchResult`.
+++
+++### RF-02: MUST FIX
+++Category: Test masking / False confidence
+++Requirement / AC: CR-02 Verification item 1, AGENTS.md ("never weaken assertions")
+++File / Line: `tests/test_service.py`: 112-121
+++Evidence:
+++```python
+++def test_service_limit_results():
+++    custom_repo = InMemoryCustomerRepository([
+++        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
+++        Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
+++        Customer("3", "Charlie Active", "charlie@example.com", "333", is_active=True),
+++    ])
+++    service = CustomerSearchService(custom_repo)
+++    result = service.search("example", field="email", limit=2)
+++    assert len(result.customers) == 2
+++    assert result.total_matches == 2
+++```
+++Problem: With 3 matching records in the test repository, the test asserts `result.total_matches == 2`. This assertion matches the bug in RF-01 and produces false confidence in green tests.
+++Risk: Defects pass automated test suites undetected.
+++Recommended next step: Update assertion to `assert result.total_matches == 3` and `assert len(result.customers) == 2`.
+++
+++### RF-03: MUST FIX
+++Category: Architecture boundary violation
+++Requirement / AC: `results/review-contract.md` (Business-rule location), CR-02 Verification item 2
+++File / Line: `src/customer_search/service.py`: 48-52
+++Evidence:
+++```python
+++if limit is not None:
+++    if not isinstance(limit, int) or limit <= 0:
+++        from src.customer_search.exceptions import ValidationError
+++        raise ValidationError("Search limit must be a positive integer.")
+++```
+++Problem: Validation is embedded directly inside `CustomerSearchService.search`. `src/customer_search/validator.py` was left untouched, violating the architectural boundary that places input validations inside the validator component.
+++Risk: Bypasses the validator layer and duplicates validation logic if other entry points call validation.
+++Recommended next step: Add `validate_limit(limit)` to `SearchQueryValidator` in `src/customer_search/validator.py` and call it from `CustomerSearchService`.
+++
+++### RF-04: SHOULD FIX
+++Category: Test coverage gap
+++Requirement / AC: CR-02 Verification items 2 and 3
+++File / Line: `tests/test_validator.py`, `tests/test_cli.py`: 96-103
+++Evidence: `tests/test_validator.py` has no tests for limit validation. `tests/test_cli.py` only verifies that JSON output has 1 customer, without checking `total_matches` or testing error handling for `--limit 0`.
+++Problem: Boundary cases (zero, negative, non-integer) and CLI error handling lack automated regression tests.
+++Risk: Future changes could break limit validation without breaking any test.
+++Recommended next step: Add unit tests in `tests/test_validator.py` for limit validation and CLI tests in `tests/test_cli.py` for `--limit 0` error exit.
+++
+++### RF-05: SHOULD FIX
+++Category: Code maintainability
+++Requirement / AC: NFR-02, Code style
+++File / Line: `src/customer_search/service.py`: 50
+++Evidence:
+++```python
+++from src.customer_search.exceptions import ValidationError
+++```
+++Problem: `ValidationError` is imported inside the method body instead of module level.
+++Risk: In-function imports create unnecessary overhead and obscure module dependencies.
+++Recommended next step: Import `ValidationError` at module level in `src/customer_search/service.py` or `validator.py`.
+++
+++### RF-06: OPTIONAL
+++Category: Type checking precision
+++Requirement / AC: Input validation robustness
+++File / Line: `src/customer_search/service.py`: 49
+++Evidence:
+++```python
+++if not isinstance(limit, int) or limit <= 0:
+++```
+++Problem: In Python, `bool` is a subclass of `int`. Passing `limit=True` evaluates to 1 and passes validation.
+++Risk: Unlikely to occur in CLI, but programmatic callers could pass a boolean by mistake.
+++Recommended next step: Add `isinstance(limit, bool)` check or check `type(limit) is not int`.
+++
+++## Missing Evidence / Open Questions
+++- Missing evidence: Tests verifying invalid limit inputs against `SearchQueryValidator`.
+++- Open questions: None.
+++
+++## Summary
+++MUST FIX: 3
+++SHOULD FIX: 2
+++OPTIONAL: 1
+++
+++## Reviewer Recommendation
+++[X] NOT READY
+++[ ] READY AFTER MUST FIX
+++[ ] READY FOR HUMAN REVIEW
+++
+++This recommendation is not a merge approval.
++diff --git a/results/run-context.md b/results/run-context.md
++new file mode 100644
++index 0000000..d0931dd
++--- /dev/null
+++++ b/results/run-context.md
++@@ -0,0 +1,13 @@
+++# Run Context
+++
+++## Change
+++Change ID: CR-02
+++Branch: ada09/cr-02
+++Base commit: 10465a2 (feat: complete ADA-08 agent-ready repository improvements, after run, and audit reports)
+++
+++## Environment
+++- OS: macOS
+++- Python version: 3.13.12
+++- Test runner: pytest 8.4.2
+++- Repository: ada-08-agentreadyrepo (ADA-09 Agentic Code Review)
+++- Timestamp: 2026-11-05T15:40:00-06:00
++diff --git a/results/verification-report.md b/results/verification-report.md
++new file mode 100644
++index 0000000..281c346
++--- /dev/null
+++++ b/results/verification-report.md
++@@ -0,0 +1,20 @@
+++# Verification Report
+++
+++## Change
+++CR-02
+++
+++## Environment
+++Python version: 3.13.12
+++Dependencies: pytest==8.4.2
+++Commit reviewed: 1e9b45a
+++
+++## Checks
+++| Check | Command | Result | Evidence |
+++|---|---|---|---|
+++| Tests | pytest -q | PASS | 46 passed in 0.02s |
+++| Lint | python3 -m compileall -q src tests | PASS | Clean syntax compilation, 0 errors |
+++| Repo contract | python3 scripts/check_repo_contract.py | PASS | REPO_CONTRACT: PASS (required files and structure present) |
+++| Security | python3 scripts/check_repo_contract.py | PASS | No sensitive files or credential patterns detected |
+++
+++## Overall Gate
+++PASS
++diff --git a/src/customer_search/cli.py b/src/customer_search/cli.py
++index b5ceae5..004e410 100644
++--- a/src/customer_search/cli.py
+++++ b/src/customer_search/cli.py
++@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
++         dest="active_only",
++         help="Filter search results to active customers only.",
++     )
+++    parser.add_argument(
+++        "--limit",
+++        type=int,
+++        default=None,
+++        dest="limit",
+++        help="Maximum number of customer records to return.",
+++    )
++     parser.add_argument(
++         "--json",
++         action="store_true",
++@@ -93,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
++             query=args.query,
++             field=args.field,
++             active_only=args.active_only,
+++            limit=args.limit,
++         )
++ 
++         if args.as_json:
++diff --git a/src/customer_search/service.py b/src/customer_search/service.py
++index 2646f67..92bea98 100644
++--- a/src/customer_search/service.py
+++++ b/src/customer_search/service.py
++@@ -24,6 +24,7 @@ class CustomerSearchService:
++         query: str,
++         field: str = "all",
++         active_only: bool = False,
+++        limit: int | None = None,
++     ) -> SearchResult:
++         """Search customers matching query on given field.
++ 
++@@ -31,15 +32,17 @@ class CustomerSearchService:
++             query: The search term.
++             field: One of 'all', 'name', 'email'. Defaults to 'all'.
++             active_only: If True, restricts matches to active customers.
+++            limit: Optional maximum number of customers to return.
++ 
++         Returns:
++             SearchResult containing matching customers and match metrics.
++ 
++         Raises:
++-            ValidationError: If query violates VR-01, VR-02, or VR-03.
+++            ValidationError: If query violates VR-01, VR-02, or VR-03, or limit is invalid.
++         """
++-        # Validate and normalize query (VR-01, VR-02, VR-03)
+++        # Validate query and limit via validator layer
++         normalized_query = self._validator.validate(query, field=field)
+++        valid_limit = self._validator.validate_limit(limit)
++         field_target = field.lower().strip()
++         search_term_lower = normalized_query.lower()
++ 
++@@ -69,9 +72,15 @@ class CustomerSearchService:
++         # SR-05 Sort alphabetically by name ascending, then by id
++         matched.sort(key=lambda c: (c.name.lower(), c.id))
++ 
+++        # Record total repository matches before applying optional slice
+++        total_matches = len(matched)
+++
+++        if valid_limit is not None:
+++            matched = matched[:valid_limit]
+++
++         return SearchResult(
++             query=normalized_query,
++             field=field_target,
++-            total_matches=len(matched),
+++            total_matches=total_matches,
++             customers=matched,
++         )
++diff --git a/src/customer_search/validator.py b/src/customer_search/validator.py
++index 7db531b..cadc904 100644
++--- a/src/customer_search/validator.py
+++++ b/src/customer_search/validator.py
++@@ -42,3 +42,25 @@ class SearchQueryValidator:
++             )
++ 
++         return normalized_query
+++
+++    @staticmethod
+++    def validate_limit(limit: int | None) -> int | None:
+++        """Validate optional limit parameter.
+++
+++        Args:
+++            limit: Maximum number of customer records to return.
+++
+++        Returns:
+++            Validated integer limit, or None.
+++
+++        Raises:
+++            ValidationError: If limit is not None and not a positive integer.
+++        """
+++        if limit is None:
+++            return None
+++
+++        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+++            raise ValidationError("Search limit must be a positive integer.")
+++
+++        return limit
+++
++diff --git a/tests/test_cli.py b/tests/test_cli.py
++index fa174a5..5f478fb 100644
++--- a/tests/test_cli.py
+++++ b/tests/test_cli.py
++@@ -92,3 +92,35 @@ def test_cli_active_only_flag(capsys):
++     for cust in data["customers"]:
++         assert cust["is_active"] is True
++ 
+++
+++def test_cli_limit_flag(capsys):
+++    # CR-02: --limit constrains output count while reporting total matches
+++    ret = main(["garcia", "--limit", "1", "--json"])
+++    assert ret == 0
+++    captured = capsys.readouterr()
+++    data = json.loads(captured.out)
+++    assert len(data["customers"]) == 1
+++    assert data["total_matches"] == 3
+++
+++
+++def test_cli_limit_text_output(capsys):
+++    # CR-02 / FR-05: Tabular text output indicates total matches
+++    ret = main(["garcia", "--limit", "1"])
+++    assert ret == 0
+++    captured = capsys.readouterr()
+++    assert "Found 3 customer(s) matching 'garcia'" in captured.out
+++    # Only 1 customer row in the table plus header/separator lines
+++    table_rows = [line for line in captured.out.splitlines() if "cust-" in line.lower()]
+++    assert len(table_rows) == 1
+++
+++
+++
+++def test_cli_limit_invalid_zero(capsys):
+++    # CR-02 / FR-06: --limit 0 exits with code 1 and descriptive error
+++    ret = main(["garcia", "--limit", "0"])
+++    assert ret == 1
+++    captured = capsys.readouterr()
+++    assert "Error: Search limit must be a positive integer." in captured.err
+++    assert "Traceback" not in captured.err
+++
+++
++diff --git a/tests/test_service.py b/tests/test_service.py
++index 29e523b..b37f0a7 100644
++--- a/tests/test_service.py
+++++ b/tests/test_service.py
++@@ -106,3 +106,29 @@ def test_service_active_only_filter():
++     assert active_res.customers[0].id == "1"
++     assert active_res.customers[0].is_active is True
++ 
+++
+++def test_service_limit_results():
+++    # CR-02: limit restricts returned customers while preserving total repository matches
+++    custom_repo = InMemoryCustomerRepository([
+++        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
+++        Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
+++        Customer("3", "Charlie Active", "charlie@example.com", "333", is_active=True),
+++    ])
+++    service = CustomerSearchService(custom_repo)
+++    result = service.search("example", field="email", limit=2)
+++    assert len(result.customers) == 2
+++    assert result.total_matches == 3
+++
+++
+++def test_service_invalid_limit_raises_validation_error(search_service):
+++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+++        search_service.search("garcia", limit=0)
+++
+++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+++        search_service.search("garcia", limit=-5)
+++
+++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+++        search_service.search("garcia", limit=True)
+++
+++
+++
++diff --git a/tests/test_validator.py b/tests/test_validator.py
++index ccbf850..e6e18a7 100644
++--- a/tests/test_validator.py
+++++ b/tests/test_validator.py
++@@ -24,3 +24,16 @@ def test_validator_invalid_query_length_or_empty(invalid_query):
++ def test_validator_invalid_field(invalid_field):
++     with pytest.raises(ValidationError, match="Invalid search field"):
++         SearchQueryValidator.validate("valid_query", field=invalid_field)
+++
+++
+++def test_validator_validate_limit_valid():
+++    assert SearchQueryValidator.validate_limit(None) is None
+++    assert SearchQueryValidator.validate_limit(1) == 1
+++    assert SearchQueryValidator.validate_limit(50) == 50
+++
+++
+++@pytest.mark.parametrize("bad_limit", [0, -1, -100, True, False, "5", 2.5, []])
+++def test_validator_validate_limit_invalid(bad_limit):
+++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+++        SearchQueryValidator.validate_limit(bad_limit)
+++
+diff --git a/results/re-review-report.md b/results/re-review-report.md
+new file mode 100644
+index 0000000..cc530fd
+--- /dev/null
++++ b/results/re-review-report.md
+@@ -0,0 +1,61 @@
++# Independent Re-Review Report
++
++## Re-Review Context
++Change ID: CR-02
++Branch / PR: ada09/cr-02
++Commit re-reviewed: ca449fb
++Preceding commit: 1e9b45a
++Base commit: 10465a2
++Review date: 2026-11-05
++Review role: Independent Reviewer Agent
++
++## Findings Resolution Table
++| Finding | Human Decision | Re-review Status | Evidence |
++|---|---|---|---|
++| RF-01 | ACCEPTED | RESOLVED | `src/customer_search/service.py`: 76-85 saves `total_matches = len(matched)` prior to applying slice. |
++| RF-02 | ACCEPTED | RESOLVED | `tests/test_service.py`: 110-121 asserts `result.total_matches == 3` and `len(result.customers) == 2`. |
++| RF-03 | ACCEPTED | RESOLVED | `src/customer_search/validator.py`: 46-65 implements `validate_limit`, called from `service.py`: 45. |
++| RF-04 | ACCEPTED | RESOLVED | `tests/test_validator.py` and `tests/test_cli.py` add coverage for invalid limits, text tables, and error exits. |
++| RF-05 | ACCEPTED | RESOLVED | In-function import removed; module-level imports maintained in `validator.py`. |
++| RF-06 | MODIFIED | RESOLVED | `validate_limit` explicitly checks `isinstance(limit, bool)` to reject boolean inputs. |
++
++## Detailed Evaluation per Finding
++
++### RF-01: Total matches reporting
++Status: RESOLVED
++In `src/customer_search/service.py`, `total_matches` is computed from the full matched list before slicing to `valid_limit`. Querying `--limit 1` on `"garcia"` now returns `"total_matches": 3` with 1 record in `customers`.
++
++### RF-02: Test assertion masking
++Status: RESOLVED
++In `tests/test_service.py:test_service_limit_results`, the assertion now checks `result.total_matches == 3` on the 3-item test dataset, ending the test masking condition.
++
++### RF-03: Parameter validation placement
++Status: RESOLVED
++`SearchQueryValidator.validate_limit(limit)` was added to `src/customer_search/validator.py`. `CustomerSearchService.search` calls this validator method, maintaining the architecture boundary.
++
++### RF-04: Test coverage gaps
++Status: RESOLVED
++Unit tests in `tests/test_validator.py` verify valid and invalid limit values. CLI tests in `tests/test_cli.py` verify `--limit 0` exits with code 1 and error message to stderr without traceback.
++
++### RF-05: In-function deferred import
++Status: RESOLVED
++The deferred import inside `CustomerSearchService.search` was eliminated. `ValidationError` is imported at module level in `validator.py`.
++
++### RF-06: Boolean input validation
++Status: RESOLVED
++`SearchQueryValidator.validate_limit` checks `isinstance(limit, bool)` before integer checks, preventing boolean inputs like `True` from passing as integer `1`.
++
++## Regression Analysis
++- Regressions checked:
++  - Repository match count when `active_only=True` and `active_only=False`.
++  - Behavior when `limit` exceeds available match count.
++  - CLI output formats (table text and JSON).
++  - Protected datasets: `data/customers.json` remains untouched.
++  - Automated test suite: 58 passed in 0.03s.
++- New MUST FIX regressions: None.
++- New SHOULD FIX findings: None.
++
++## Re-Review Recommendation
++READY FOR HUMAN REVIEW
++
++All six findings have been resolved in commit ca449fb without introducing new regressions. The PR candidate is ready for final human decision.
+diff --git a/results/review-contract.md b/results/review-contract.md
+new file mode 100644
+index 0000000..53ddcb6
+--- /dev/null
++++ b/results/review-contract.md
+@@ -0,0 +1,36 @@
++# Review Contract
++
++## Change
++CR-02
++
++## Requirements / Acceptance Criteria
++- FR-05: Results must accurately state total matches and details for each customer record.
++- FR-06: Invalid inputs must produce descriptive errors and non-zero exit codes without tracebacks.
++- NFR-02: Search service and business validation remain decoupled from CLI.
++- AC-05: Output includes accurate total count and customer details.
++- AC-06: Validation errors are trapped and reported cleanly.
++- AC-08: Service operates independently without CLI dependencies.
++
++## Architecture Constraints
++- Expected dependency flow: CLI -> Service -> Validator and Repository -> Models.
++- Business-rule location: Query and parameter validations live in `src/customer_search/validator.py`, not ad-hoc in CLI or dispersed across layers.
++- Protected boundaries: `data/customers.json` is protected and must not be altered. Existing test assertions must not be weakened.
++
++## Review Rules
++- Verify requirement coverage against CR-02 and referenced ACs.
++- Verify every called API and dependency exists in the codebase.
++- Check architecture boundaries, especially input validation placement.
++- Inspect tests for masking, over-mocking, or false confidence.
++- Check regression behavior on existing commands and service calls.
++- Identify unnecessary technical debt introduced by the change.
++- Cite concrete evidence (file and line number) for every finding.
++
++## Severity
++MUST FIX:
++Requirement violation, regression, security or integrity risk, non-existent API or dependency, broken architecture constraint, or defect that makes the change unsafe to approve.
++
++SHOULD FIX:
++Significant maintainability, coverage, design, or clarity issue that does not block the requested behavior.
++
++OPTIONAL:
++Non-blocking improvement outside the minimum acceptance threshold.
+diff --git a/results/review-report.md b/results/review-report.md
+new file mode 100644
+index 0000000..92f9718
+--- /dev/null
++++ b/results/review-report.md
+@@ -0,0 +1,131 @@
++# Independent Review Report
++
++## Review Context
++Change ID: CR-02
++Branch / PR: ada09/cr-02
++Commit reviewed: 1e9b45a
++Reviewer agent: Independent Reviewer Agent
++Model: Gemini 3.8 Flash
++Tools / permissions: Read-only codebase inspection
++
++## Requirements Reviewed
++- CR-02: Add optional limit parameter to search while preserving total matching records.
++- FR-05: Output includes accurate total count and customer details.
++- FR-06: Clean error handling for invalid input without unmanaged tracebacks.
++- NFR-02: Business logic and search services remain decoupled from CLI.
++- AC-05: Results state total matches and details for each matching customer.
++- AC-06: Validation errors are trapped and reported cleanly to stderr with exit code 1.
++- AC-08: Service operates independently without CLI dependencies.
++
++## Verification Evidence Reviewed
++- Automated verification: `./scripts/verify_repo.sh` reported 46 passed tests and clean compilation.
++- Diff inspection: `results/pr.diff` (commit 1e9b45a vs base 10465a2).
++- Coder report: `results/coder-report.md` noted inline validation and sliced count assertions.
++- Runtime check: `python3 -m src.customer_search.cli "garcia" --limit 1 --json` reports `"total_matches": 1` instead of `3`.
++
++## Findings
++
++### RF-01: MUST FIX
++Category: Requirement violation / Data accuracy
++Requirement / AC: CR-02, FR-05, AC-05
++File / Line: `src/customer_search/service.py`: 79-87
++Evidence:
++```python
++if limit is not None:
++    matched = matched[:limit]
++
++return SearchResult(
++    query=normalized_query,
++    field=field_target,
++    total_matches=len(matched),
++    customers=matched,
++)
++```
++Problem: `total_matches` is calculated as `len(matched)` after slicing. It reports the slice length instead of preserving the total count of matches in the repository.
++Risk: Callers and UI consumers receive inaccurate total match counts whenever a limit is applied.
++Recommended next step: Store `total_matches = len(matched)` before slicing, and pass that total to `SearchResult`.
++
++### RF-02: MUST FIX
++Category: Test masking / False confidence
++Requirement / AC: CR-02 Verification item 1, AGENTS.md ("never weaken assertions")
++File / Line: `tests/test_service.py`: 112-121
++Evidence:
++```python
++def test_service_limit_results():
++    custom_repo = InMemoryCustomerRepository([
++        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
++        Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
++        Customer("3", "Charlie Active", "charlie@example.com", "333", is_active=True),
++    ])
++    service = CustomerSearchService(custom_repo)
++    result = service.search("example", field="email", limit=2)
++    assert len(result.customers) == 2
++    assert result.total_matches == 2
++```
++Problem: With 3 matching records in the test repository, the test asserts `result.total_matches == 2`. This assertion matches the bug in RF-01 and produces false confidence in green tests.
++Risk: Defects pass automated test suites undetected.
++Recommended next step: Update assertion to `assert result.total_matches == 3` and `assert len(result.customers) == 2`.
++
++### RF-03: MUST FIX
++Category: Architecture boundary violation
++Requirement / AC: `results/review-contract.md` (Business-rule location), CR-02 Verification item 2
++File / Line: `src/customer_search/service.py`: 48-52
++Evidence:
++```python
++if limit is not None:
++    if not isinstance(limit, int) or limit <= 0:
++        from src.customer_search.exceptions import ValidationError
++        raise ValidationError("Search limit must be a positive integer.")
++```
++Problem: Validation is embedded directly inside `CustomerSearchService.search`. `src/customer_search/validator.py` was left untouched, violating the architectural boundary that places input validations inside the validator component.
++Risk: Bypasses the validator layer and duplicates validation logic if other entry points call validation.
++Recommended next step: Add `validate_limit(limit)` to `SearchQueryValidator` in `src/customer_search/validator.py` and call it from `CustomerSearchService`.
++
++### RF-04: SHOULD FIX
++Category: Test coverage gap
++Requirement / AC: CR-02 Verification items 2 and 3
++File / Line: `tests/test_validator.py`, `tests/test_cli.py`: 96-103
++Evidence: `tests/test_validator.py` has no tests for limit validation. `tests/test_cli.py` only verifies that JSON output has 1 customer, without checking `total_matches` or testing error handling for `--limit 0`.
++Problem: Boundary cases (zero, negative, non-integer) and CLI error handling lack automated regression tests.
++Risk: Future changes could break limit validation without breaking any test.
++Recommended next step: Add unit tests in `tests/test_validator.py` for limit validation and CLI tests in `tests/test_cli.py` for `--limit 0` error exit.
++
++### RF-05: SHOULD FIX
++Category: Code maintainability
++Requirement / AC: NFR-02, Code style
++File / Line: `src/customer_search/service.py`: 50
++Evidence:
++```python
++from src.customer_search.exceptions import ValidationError
++```
++Problem: `ValidationError` is imported inside the method body instead of module level.
++Risk: In-function imports create unnecessary overhead and obscure module dependencies.
++Recommended next step: Import `ValidationError` at module level in `src/customer_search/service.py` or `validator.py`.
++
++### RF-06: OPTIONAL
++Category: Type checking precision
++Requirement / AC: Input validation robustness
++File / Line: `src/customer_search/service.py`: 49
++Evidence:
++```python
++if not isinstance(limit, int) or limit <= 0:
++```
++Problem: In Python, `bool` is a subclass of `int`. Passing `limit=True` evaluates to 1 and passes validation.
++Risk: Unlikely to occur in CLI, but programmatic callers could pass a boolean by mistake.
++Recommended next step: Add `isinstance(limit, bool)` check or check `type(limit) is not int`.
++
++## Missing Evidence / Open Questions
++- Missing evidence: Tests verifying invalid limit inputs against `SearchQueryValidator`.
++- Open questions: None.
++
++## Summary
++MUST FIX: 3
++SHOULD FIX: 2
++OPTIONAL: 1
++
++## Reviewer Recommendation
++[X] NOT READY
++[ ] READY AFTER MUST FIX
++[ ] READY FOR HUMAN REVIEW
++
++This recommendation is not a merge approval.
+diff --git a/results/run-context.md b/results/run-context.md
+new file mode 100644
+index 0000000..d0931dd
+--- /dev/null
++++ b/results/run-context.md
+@@ -0,0 +1,13 @@
++# Run Context
++
++## Change
++Change ID: CR-02
++Branch: ada09/cr-02
++Base commit: 10465a2 (feat: complete ADA-08 agent-ready repository improvements, after run, and audit reports)
++
++## Environment
++- OS: macOS
++- Python version: 3.13.12
++- Test runner: pytest 8.4.2
++- Repository: ada-08-agentreadyrepo (ADA-09 Agentic Code Review)
++- Timestamp: 2026-11-05T15:40:00-06:00
+diff --git a/results/verification-report.md b/results/verification-report.md
+new file mode 100644
+index 0000000..281c346
+--- /dev/null
++++ b/results/verification-report.md
+@@ -0,0 +1,20 @@
++# Verification Report
++
++## Change
++CR-02
++
++## Environment
++Python version: 3.13.12
++Dependencies: pytest==8.4.2
++Commit reviewed: 1e9b45a
++
++## Checks
++| Check | Command | Result | Evidence |
++|---|---|---|---|
++| Tests | pytest -q | PASS | 46 passed in 0.02s |
++| Lint | python3 -m compileall -q src tests | PASS | Clean syntax compilation, 0 errors |
++| Repo contract | python3 scripts/check_repo_contract.py | PASS | REPO_CONTRACT: PASS (required files and structure present) |
++| Security | python3 scripts/check_repo_contract.py | PASS | No sensitive files or credential patterns detected |
++
++## Overall Gate
++PASS
+diff --git a/src/customer_search/cli.py b/src/customer_search/cli.py
+index b5ceae5..004e410 100644
+--- a/src/customer_search/cli.py
++++ b/src/customer_search/cli.py
+@@ -62,6 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
+         dest="active_only",
+         help="Filter search results to active customers only.",
+     )
++    parser.add_argument(
++        "--limit",
++        type=int,
++        default=None,
++        dest="limit",
++        help="Maximum number of customer records to return.",
++    )
+     parser.add_argument(
+         "--json",
+         action="store_true",
+@@ -93,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
+             query=args.query,
+             field=args.field,
+             active_only=args.active_only,
++            limit=args.limit,
+         )
+ 
+         if args.as_json:
+diff --git a/src/customer_search/service.py b/src/customer_search/service.py
+index 2646f67..92bea98 100644
+--- a/src/customer_search/service.py
++++ b/src/customer_search/service.py
+@@ -24,6 +24,7 @@ class CustomerSearchService:
+         query: str,
+         field: str = "all",
+         active_only: bool = False,
++        limit: int | None = None,
+     ) -> SearchResult:
+         """Search customers matching query on given field.
+ 
+@@ -31,15 +32,17 @@ class CustomerSearchService:
+             query: The search term.
+             field: One of 'all', 'name', 'email'. Defaults to 'all'.
+             active_only: If True, restricts matches to active customers.
++            limit: Optional maximum number of customers to return.
+ 
+         Returns:
+             SearchResult containing matching customers and match metrics.
+ 
+         Raises:
+-            ValidationError: If query violates VR-01, VR-02, or VR-03.
++            ValidationError: If query violates VR-01, VR-02, or VR-03, or limit is invalid.
+         """
+-        # Validate and normalize query (VR-01, VR-02, VR-03)
++        # Validate query and limit via validator layer
+         normalized_query = self._validator.validate(query, field=field)
++        valid_limit = self._validator.validate_limit(limit)
+         field_target = field.lower().strip()
+         search_term_lower = normalized_query.lower()
+ 
+@@ -69,9 +72,15 @@ class CustomerSearchService:
+         # SR-05 Sort alphabetically by name ascending, then by id
+         matched.sort(key=lambda c: (c.name.lower(), c.id))
+ 
++        # Record total repository matches before applying optional slice
++        total_matches = len(matched)
++
++        if valid_limit is not None:
++            matched = matched[:valid_limit]
++
+         return SearchResult(
+             query=normalized_query,
+             field=field_target,
+-            total_matches=len(matched),
++            total_matches=total_matches,
+             customers=matched,
+         )
+diff --git a/src/customer_search/validator.py b/src/customer_search/validator.py
+index 7db531b..cadc904 100644
+--- a/src/customer_search/validator.py
++++ b/src/customer_search/validator.py
+@@ -42,3 +42,25 @@ class SearchQueryValidator:
+             )
+ 
+         return normalized_query
++
++    @staticmethod
++    def validate_limit(limit: int | None) -> int | None:
++        """Validate optional limit parameter.
++
++        Args:
++            limit: Maximum number of customer records to return.
++
++        Returns:
++            Validated integer limit, or None.
++
++        Raises:
++            ValidationError: If limit is not None and not a positive integer.
++        """
++        if limit is None:
++            return None
++
++        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
++            raise ValidationError("Search limit must be a positive integer.")
++
++        return limit
++
+diff --git a/tests/test_cli.py b/tests/test_cli.py
+index fa174a5..5f478fb 100644
+--- a/tests/test_cli.py
++++ b/tests/test_cli.py
+@@ -92,3 +92,35 @@ def test_cli_active_only_flag(capsys):
+     for cust in data["customers"]:
+         assert cust["is_active"] is True
+ 
++
++def test_cli_limit_flag(capsys):
++    # CR-02: --limit constrains output count while reporting total matches
++    ret = main(["garcia", "--limit", "1", "--json"])
++    assert ret == 0
++    captured = capsys.readouterr()
++    data = json.loads(captured.out)
++    assert len(data["customers"]) == 1
++    assert data["total_matches"] == 3
++
++
++def test_cli_limit_text_output(capsys):
++    # CR-02 / FR-05: Tabular text output indicates total matches
++    ret = main(["garcia", "--limit", "1"])
++    assert ret == 0
++    captured = capsys.readouterr()
++    assert "Found 3 customer(s) matching 'garcia'" in captured.out
++    # Only 1 customer row in the table plus header/separator lines
++    table_rows = [line for line in captured.out.splitlines() if "cust-" in line.lower()]
++    assert len(table_rows) == 1
++
++
++
++def test_cli_limit_invalid_zero(capsys):
++    # CR-02 / FR-06: --limit 0 exits with code 1 and descriptive error
++    ret = main(["garcia", "--limit", "0"])
++    assert ret == 1
++    captured = capsys.readouterr()
++    assert "Error: Search limit must be a positive integer." in captured.err
++    assert "Traceback" not in captured.err
++
++
+diff --git a/tests/test_service.py b/tests/test_service.py
+index 29e523b..b37f0a7 100644
+--- a/tests/test_service.py
++++ b/tests/test_service.py
+@@ -106,3 +106,29 @@ def test_service_active_only_filter():
+     assert active_res.customers[0].id == "1"
+     assert active_res.customers[0].is_active is True
+ 
++
++def test_service_limit_results():
++    # CR-02: limit restricts returned customers while preserving total repository matches
++    custom_repo = InMemoryCustomerRepository([
++        Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
++        Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
++        Customer("3", "Charlie Active", "charlie@example.com", "333", is_active=True),
++    ])
++    service = CustomerSearchService(custom_repo)
++    result = service.search("example", field="email", limit=2)
++    assert len(result.customers) == 2
++    assert result.total_matches == 3
++
++
++def test_service_invalid_limit_raises_validation_error(search_service):
++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
++        search_service.search("garcia", limit=0)
++
++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
++        search_service.search("garcia", limit=-5)
++
++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
++        search_service.search("garcia", limit=True)
++
++
++
+diff --git a/tests/test_validator.py b/tests/test_validator.py
+index ccbf850..e6e18a7 100644
+--- a/tests/test_validator.py
++++ b/tests/test_validator.py
+@@ -24,3 +24,16 @@ def test_validator_invalid_query_length_or_empty(invalid_query):
+ def test_validator_invalid_field(invalid_field):
+     with pytest.raises(ValidationError, match="Invalid search field"):
+         SearchQueryValidator.validate("valid_query", field=invalid_field)
++
++
++def test_validator_validate_limit_valid():
++    assert SearchQueryValidator.validate_limit(None) is None
++    assert SearchQueryValidator.validate_limit(1) == 1
++    assert SearchQueryValidator.validate_limit(50) == 50
++
++
++@pytest.mark.parametrize("bad_limit", [0, -1, -100, True, False, "5", 2.5, []])
++def test_validator_validate_limit_invalid(bad_limit):
++    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
++        SearchQueryValidator.validate_limit(bad_limit)
++

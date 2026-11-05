@@ -119,3 +119,36 @@ La variabilidad estocástica en la generación del modelo de lenguaje y la prese
 
 ### 13. ¿Qué elementos de este ADA conservarás como base para tu proyecto final?
 Conservaré la tríada operativa: un `AGENTS.md` conciso con fuentes de verdad y reglas de cambio, un `docs/REPO_MAP.md` con entry points y rutas protegidas, y un script ejecutable `./scripts/verify_repo.sh` integrado en CI para validar código, sintaxis y contratos en un solo paso.
+
+## ADA-09: Agentic Code Review (Reflexión individual)
+
+### 1. ¿Qué encontró el reviewer-agent que el coder-agent no detectó?
+El reviewer-agent detectó que `SearchResult.total_matches` se calculaba después de cortar la lista con `matched[:limit]`. El coder agent había puesto `total_matches = len(matched)` al final, por lo que el resultado devolvía la cantidad de elementos devueltos y no el total real de coincidencias en el repositorio. El reviewer también detectó que la validación del límite se había colocado directamente dentro de `service.py` con una importación local, ignorando `src/customer_search/validator.py`.
+
+### 2. ¿Qué finding fue más difícil de clasificar y por qué?
+El finding sobre la validación de tipos booleanos (RF-06). En Python, `isinstance(True, int)` es verdadero, por lo que pasar `limit=True` se interpretaba como `limit=1`. El reviewer lo catalogó como OPTIONAL porque desde la terminal `argparse` entrega enteros o falla antes. Sin embargo, como el servicio puede consumirse desde código Python directamente (cumpliendo AC-08 y NFR-02), admitir booleanos representaba un fallo real en la API. Por eso se reclasificó como SHOULD FIX.
+
+### 3. ¿Qué finding rechazaste o modificaste como humano y qué evidencia usaste?
+Modifiqué RF-06 de OPTIONAL a SHOULD FIX. La evidencia fue la especificación de NFR-02 y el criterio AC-08, que exigen que `CustomerSearchService` funcione de forma desacoplada de la interfaz CLI. En una llamada programática directa en Python, un usuario podría pasar un booleano por error. Verificar `isinstance(limit, bool)` en una línea cerró esa fuga sin complicar el código.
+
+### 4. ¿Hubo algún test verde que produjera falsa confianza? Explica.
+Sí. En la primera pasada, la prueba `test_service_limit_results` creada por el coder agent comparaba `assert result.total_matches == 2` sobre un repositorio con tres clientes coincidentes. Como el código cortaba la lista a dos elementos y asignaba `len(matched)` a `total_matches`, la prueba pasó en verde. El test reflejaba el error de la implementación en lugar de validar el requisito de negocio.
+
+### 5. ¿Verificaste alguna API o dependencia que parecía plausible? ¿Qué encontraste?
+Verifiqué la importación `from src.customer_search.exceptions import ValidationError` dentro del método `search` en `service.py`. Parecía una llamada normal y el código funcionaba, pero colocaba la validación en la capa incorrecta y forzaba una importación tardía. Al revisar `ARCHITECTURE.md`, encontré que las reglas de entrada corresponden a `SearchQueryValidator`, así que moví la lógica a `validator.py`.
+
+### 6. ¿Qué arquitectura o regla del repositorio fue más útil para la revisión?
+El contrato de capas documentado en `ARCHITECTURE.md` y `docs/REPO_MAP.md`. Definir que el flujo va de CLI a Service y de Service a Validator evitó discusiones sobre dónde colocar la lógica de `validate_limit`. Tener las fronteras claras facilitó justificar por qué la validación no debía quedarse en el servicio ni en la CLI.
+
+### 7. ¿Qué problema pudo detectar un check determinista antes que el reviewer-agent?
+El script `./scripts/verify_repo.sh` detectó un error de sintaxis y un fixture faltante (`fixture 'service' not found`) durante el ciclo de corrección antes de que el revisor tuviera que mirar el código. Los checks deterministas resuelven fallos obvios de compilación, sintaxis y ejecución en segundos, reservando el tiempo de revisión para problemas semánticos y de arquitectura.
+
+### 8. ¿Qué parte del review sigue requiriendo criterio humano?
+Decidir si un comportamiento observado es un error o una decisión aceptable fuera de alcance. Un agente puede señalar que falta soporte para paginación o cursores, pero corresponde a la persona decidir si eso amplía el alcance del PR o si basta con un límite simple en memoria. También se necesita criterio humano para autorizar el paso final a producción o merge.
+
+### 9. ¿Qué technical debt aceptaste o diferiste y por qué?
+Acepté que el filtrado y corte del límite sigan ocurriendo en memoria sobre la lista completa de clientes. Para un archivo local de prueba con mil registros, la búsqueda toma menos de 40 milisegundos y cumple NFR-01. Introducir paginación con cursores o carga parcial de disco habría obligado a rediseñar el repositorio, lo cual queda fuera del alcance de este cambio.
+
+### 10. ¿Qué artefactos de este ADA reutilizarías en la Agentic Software Factory final?
+Reutilizaría `review-contract.md` y `human-review-decisions.md`. El contrato de revisión fija qué se espera antes de mirar el diff, lo que evita comentarios subjetivos. La plantilla de decisiones humanas deja un registro claro de qué sugerencias se aceptaron, cuáles se cambiaron y quién autorizó el cambio antes de integrar.
+

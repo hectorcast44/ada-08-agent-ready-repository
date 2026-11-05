@@ -42,3 +42,25 @@ class SearchQueryValidator:
             )
 
         return normalized_query
+
+    @staticmethod
+    def validate_limit(limit: int | None) -> int | None:
+        """Validate optional limit parameter.
+
+        Args:
+            limit: Maximum number of customer records to return.
+
+        Returns:
+            Validated integer limit, or None.
+
+        Raises:
+            ValidationError: If limit is not None and not a positive integer.
+        """
+        if limit is None:
+            return None
+
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValidationError("Search limit must be a positive integer.")
+
+        return limit
+

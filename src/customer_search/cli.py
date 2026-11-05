@@ -63,6 +63,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Filter search results to active customers only.",
     )
     parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        dest="limit",
+        help="Maximum number of customer records to return.",
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         dest="as_json",
@@ -93,6 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             query=args.query,
             field=args.field,
             active_only=args.active_only,
+            limit=args.limit,
         )
 
         if args.as_json:
