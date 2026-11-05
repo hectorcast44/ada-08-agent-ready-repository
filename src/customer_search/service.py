@@ -40,15 +40,11 @@ class CustomerSearchService:
         Raises:
             ValidationError: If query violates VR-01, VR-02, or VR-03, or limit is invalid.
         """
-        # Validate and normalize query (VR-01, VR-02, VR-03)
+        # Validate query and limit via validator layer
         normalized_query = self._validator.validate(query, field=field)
+        valid_limit = self._validator.validate_limit(limit)
         field_target = field.lower().strip()
         search_term_lower = normalized_query.lower()
-
-        if limit is not None:
-            if not isinstance(limit, int) or limit <= 0:
-                from src.customer_search.exceptions import ValidationError
-                raise ValidationError("Search limit must be a positive integer.")
 
         all_customers = self._repository.get_all()
         matched: list[Customer] = []
@@ -76,12 +72,15 @@ class CustomerSearchService:
         # SR-05 Sort alphabetically by name ascending, then by id
         matched.sort(key=lambda c: (c.name.lower(), c.id))
 
-        if limit is not None:
-            matched = matched[:limit]
+        # Record total repository matches before applying optional slice
+        total_matches = len(matched)
+
+        if valid_limit is not None:
+            matched = matched[:valid_limit]
 
         return SearchResult(
             query=normalized_query,
             field=field_target,
-            total_matches=len(matched),
+            total_matches=total_matches,
             customers=matched,
         )

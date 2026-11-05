@@ -55,3 +55,24 @@ Base commit: 10465a2
 [x] Ready for independent review
 
 This report is NOT an approval.
+
+## Fix Cycle
+### Findings Addressed
+- RF-01: Corrected total matches calculation. `CustomerSearchService.search` now captures `total_matches = len(matched)` before applying optional slicing.
+- RF-02: Corrected test assertion in `tests/test_service.py:test_service_limit_results` to assert `result.total_matches == 3` and `len(result.customers) == 2`.
+- RF-03: Moved limit validation into `SearchQueryValidator.validate_limit(limit)` in `src/customer_search/validator.py`.
+- RF-04: Added test cases in `tests/test_validator.py` (valid and invalid limit cases) and in `tests/test_cli.py` (checking total matches in JSON and table output, plus `--limit 0` exit code 1).
+- RF-05: Cleaned up imports so `ValidationError` is imported at module level.
+- RF-06: Added explicit check `isinstance(limit, bool)` in `validate_limit` to reject boolean values.
+
+### Files Modified in Fix Cycle
+- `src/customer_search/validator.py`
+- `src/customer_search/service.py`
+- `tests/test_validator.py`
+- `tests/test_service.py`
+- `tests/test_cli.py`
+
+### Fix Verification Result
+- Command: `./scripts/verify_repo.sh`
+- Result: 58 passed in 0.04s, compileall passed, repo contract passed. Exit code 0 (`VERIFY_REPO: PASS`).
+

@@ -108,7 +108,7 @@ def test_service_active_only_filter():
 
 
 def test_service_limit_results():
-    # CR-02: limit restricts returned customers
+    # CR-02: limit restricts returned customers while preserving total repository matches
     custom_repo = InMemoryCustomerRepository([
         Customer("1", "Alice Active", "alice@example.com", "111", is_active=True),
         Customer("2", "Bob Active", "bob@example.com", "222", is_active=True),
@@ -117,5 +117,18 @@ def test_service_limit_results():
     service = CustomerSearchService(custom_repo)
     result = service.search("example", field="email", limit=2)
     assert len(result.customers) == 2
-    assert result.total_matches == 2
+    assert result.total_matches == 3
+
+
+def test_service_invalid_limit_raises_validation_error(search_service):
+    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+        search_service.search("garcia", limit=0)
+
+    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+        search_service.search("garcia", limit=-5)
+
+    with pytest.raises(ValidationError, match="Search limit must be a positive integer."):
+        search_service.search("garcia", limit=True)
+
+
 
